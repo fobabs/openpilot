@@ -1,67 +1,56 @@
 #pragma once
 
-#include <QtWidgets>
+#include <optional>
 
-#include "selfdrive/common/params.h"
+#include <QDateTime>
+#include <QFileSystemWatcher>
+#include <QPainter>
+#include <QPixmap>
+#include <QSurfaceFormat>
+#include <QWidget>
 
+#include "cereal/gen/cpp/car.capnp.h"
+#include "common/params.h"
 
-inline QString getBrand() {
-  return Params().getBool("Passive") ? "dashcam" : "openpilot";
-}
+QString getVersion();
+QString getBrand();
+QString getUserAgent();
+std::optional<QString> getDongleId();
+QMap<QString, QString> getSupportedLanguages();
+void setQtSurfaceFormat();
+void sigTermHandler(int s);
+QString timeAgo(const QDateTime &date);
+void swagLogMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg);
+void initApp(int argc, char *argv[], bool disable_hidpi = true);
+QWidget* topWidget (QWidget* widget);
+QPixmap loadPixmap(const QString &fileName, const QSize &size = {}, Qt::AspectRatioMode aspectRatioMode = Qt::KeepAspectRatio);
+QPixmap bootstrapPixmap(const QString &id);
 
-inline QString getBrandVersion() {
-  return getBrand() + " v" + QString::fromStdString(Params().get("Version")).left(14).trimmed();
-}
+void drawRoundedRect(QPainter &painter, const QRectF &rect, qreal xRadiusTop, qreal yRadiusTop, qreal xRadiusBottom, qreal yRadiusBottom);
+QColor interpColor(float xv, std::vector<float> xp, std::vector<QColor> fp);
+bool hasLongitudinalControl(const cereal::CarParams::Reader &car_params);
 
-inline void configFont(QPainter &p, const QString &family, int size, const QString &style) {
-  QFont f(family);
-  f.setPixelSize(size);
-  f.setStyleName(style);
-  p.setFont(f);
-}
-
-inline void clearLayout(QLayout* layout) {
-  while (QLayoutItem* item = layout->takeAt(0)) {
-    if (QWidget* widget = item->widget()) {
-      widget->deleteLater();
-    }
-    if (QLayout* childLayout = item->layout()) {
-      clearLayout(childLayout);
-    }
-    delete item;
+struct InterFont : public QFont {
+  InterFont(int pixel_size, QFont::Weight weight = QFont::Normal) : QFont("Inter") {
+    setPixelSize(pixel_size);
+    setWeight(weight);
   }
-}
+};
 
-inline QString timeAgo(const QDateTime &date) {
-  int diff = date.secsTo(QDateTime::currentDateTimeUtc());
+class ParamWatcher : public QObject {
+  Q_OBJECT
 
-  QString s;
-  if (diff < 60) {
-    s = "now";
-  } else if (diff < 60 * 60) {
-    int minutes = diff / 60;
-    s = QString("%1 minute%2 ago").arg(minutes).arg(minutes > 1 ? "s" : "");
-  } else if (diff < 60 * 60 * 24) {
-    int hours = diff / (60 * 60);
-    s = QString("%1 hour%2 ago").arg(hours).arg(hours > 1 ? "s" : "");
-  } else if (diff < 3600 * 24 * 7) {
-    int days = diff / (60 * 60 * 24);
-    s = QString("%1 day%2 ago").arg(days).arg(days > 1 ? "s" : "");
-  } else {
-    s = date.date().toString();
-  }
+public:
+  ParamWatcher(QObject *parent);
+  void addParam(const QString &param_name);
 
-  return s;
-}
+signals:
+  void paramChanged(const QString &param_name, const QString &param_value);
 
-inline void setQtSurfaceFormat() {
-  QSurfaceFormat fmt;
-#ifdef __APPLE__
-  fmt.setVersion(3, 2);
-  fmt.setProfile(QSurfaceFormat::OpenGLContextProfile::CoreProfile);
-  fmt.setRenderableType(QSurfaceFormat::OpenGL);
-#else
-  fmt.setRenderableType(QSurfaceFormat::OpenGLES);
-#endif
-  QSurfaceFormat::setDefaultFormat(fmt);
-}
+private:
+  void fileChanged(const QString &path);
+
+  QFileSystemWatcher *watcher;
+  QHash<QString, QString> params_hash;
+  Params params;
+};

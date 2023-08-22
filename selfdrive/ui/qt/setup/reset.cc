@@ -2,95 +2,140 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
-#include <QWidget>
 
 #include "selfdrive/ui/qt/qt_window.h"
+#include "selfdrive/ui/qt/setup/reset.h"
 
-#define USERDATA "/dev/disk/by-partlabel/userdata"
 #define NVME "/dev/nvme0n1"
+#define USERDATA "/dev/disk/by-partlabel/userdata"
 
-bool do_reset() {
-  std::vector<const char*> cmds = {
-    "sudo umount " NVME,
-    "yes | sudo mkfs.ext4 " NVME,
-    "sudo umount " USERDATA,
-    "yes | sudo mkfs.ext4 " USERDATA,
-    "sudo reboot",
-  };
+void Reset::doErase() {
+  // best effort to wipe nvme
+  std::system("sudo umount " NVME);
+  std::system("yes | sudo mkfs.ext4 " NVME);
 
-  for (auto &cmd : cmds) {
-    int ret = std::system(cmd);
-    if (ret != 0) return false;
+  int rm = std::system("sudo rm -rf /data/*");
+  std::system("sudo umount " USERDATA);
+  int fmt = std::system("yes | sudo mkfs.ext4 " USERDATA);
+
+  if (rm == 0 || fmt == 0) {
+    std::system("sudo reboot");
   }
-  return true;
+  body->setText(tr("Reset failed. Reboot to try again."));
+  rebootBtn->show();
 }
 
-int main(int argc, char *argv[]) {
-  QApplication a(argc, argv);
-  QWidget window;
-  setMainWindow(&window);
-
-  QVBoxLayout *layout = new QVBoxLayout();
-  layout->setContentsMargins(125, 125, 125, 125);
-
-  QLabel *title = new QLabel("System Reset");
-  title->setStyleSheet(R"(
-    font-weight: 500;
-    font-size: 100px;
-  )");
-  layout->addWidget(title, 0, Qt::AlignTop);
-
-  QLabel *body = new QLabel("System reset triggered. Press confirm to erase all content and settings. Press cancel to resume boot.");
-  body->setWordWrap(true);
-  body->setAlignment(Qt::AlignCenter);
-  body->setStyleSheet("font-size: 65px;");
-  layout->addWidget(body, 1, Qt::AlignCenter);
-
-  QHBoxLayout *btn_layout = new QHBoxLayout();
-
-  QPushButton *cancel_btn = new QPushButton("Cancel");
-  btn_layout->addWidget(cancel_btn, 0, Qt::AlignLeft);
-  QObject::connect(cancel_btn, &QPushButton::released, &a, &QApplication::quit);
-
-  QPushButton *confirm_btn  = new QPushButton("Confirm");
-  btn_layout->addWidget(confirm_btn, 0, Qt::AlignRight);
-  QObject::connect(confirm_btn, &QPushButton::released, [=]() {
-    const QString confirm_txt = "Are you sure you want to reset your device?";
-    if (body->text() != confirm_txt) {
-      body->setText(confirm_txt);
-    } else {
-      body->setText("Resetting device...");
-      cancel_btn->hide();
-      confirm_btn->hide();
-      QCoreApplication::processEvents(QEventLoop::AllEvents, 1000);
+void Reset::startReset() {
+  body->setText(tr("Resetting device...\nThis may take up to a minute."));
+  rejectBtn->hide();
+  rebootBtn->hide();
+  confirmBtn->hide();
 #ifdef __aarch64__
-      bool ret = do_reset();
-      if (!ret) {
-        body->setText("Reset failed.");
-        cancel_btn->show();
-      }
+  QTimer::singleShot(100, this, &Reset::doErase);
 #endif
-    }
+}
+
+void Reset::confirm() {
+  const QString confirm_txt = tr("Are you sure you want to reset your device?");
+  if (body->text() != confirm_txt) {
+    body->setText(confirm_txt);
+  } else {
+    startReset();
+  }
+}
+
+Reset::Reset(ResetMode mode, QWidget *parent) : QWidget(parent) {
+  QVBoxLayout *main_layout = new QVBoxLayout(this);
+  main_layout->setContentsMargins(45, 220, 45, 45);
+  main_layout->setSpacing(0);
+
+  QLabel *title = new QLabel(tr("System Reset"));
+  title->setStyleSheet("font-size: 90px; font-weight: 600;");
+  main_layout->addWidget(title, 0, Qt::AlignTop | Qt::AlignLeft);
+
+  main_layout->addSpacing(60);
+
+  body = new QLabel(tr("Press confirm to erase all content and settings. Press cancel to resume boot."));
+  body->setWordWrap(true);
+  body->setStyleSheet("font-size: 80px; font-weight: light;");
+  main_layout->addWidget(body, 1, Qt::AlignTop | Qt::AlignLeft);
+
+  QHBoxLayout *blayout = new QHBoxLayout();
+  main_layout->addLayout(blayout);
+  blayout->setSpacing(50);
+
+  rejectBtn = new QPushButton(tr("Cancel"));
+  blayout->addWidget(rejectBtn);
+  QObject::connect(rejectBtn, &QPushButton::clicked, QCoreApplication::instance(), &QCoreApplication::quit);
+
+  rebootBtn = new QPushButton(tr("Reboot"));
+  blayout->addWidget(rebootBtn);
+#ifdef __aarch64__
+  QObject::connect(rebootBtn, &QPushButton::clicked, [=]{
+    std::system("sudo reboot");
   });
+#endif
 
-  layout->addLayout(btn_layout);
+  confirmBtn = new QPushButton(tr("Confirm"));
+  confirmBtn->setStyleSheet(R"(
+    QPushButton {
+      background-color: #465BEA;
+    }
+    QPushButton:pressed {
+      background-color: #3049F4;
+    }
+  )");
+  blayout->addWidget(confirmBtn);
+  QObject::connect(confirmBtn, &QPushButton::clicked, this, &Reset::confirm);
 
-  window.setLayout(layout);
-  window.setStyleSheet(R"(
+  bool recover = mode == ResetMode::RECOVER;
+  rejectBtn->setVisible(!recover);
+  rebootBtn->setVisible(recover);
+  if (recover) {
+    body->setText(tr("Unable to mount data partition. Partition may be corrupted. Press confirm to erase and reset your device."));
+  }
+
+  // automatically start if we're just finishing up an ABL reset
+  if (mode == ResetMode::FORMAT) {
+    startReset();
+  }
+
+  setStyleSheet(R"(
     * {
+      font-family: Inter;
       color: white;
       background-color: black;
     }
+    QLabel {
+      margin-left: 140;
+    }
     QPushButton {
-      padding: 50px;
-      padding-right: 100px;
-      padding-left: 100px;
-      border: 7px solid white;
-      border-radius: 20px;
-      font-size: 50px;
+      height: 160;
+      font-size: 55px;
+      font-weight: 400;
+      border-radius: 10px;
+      background-color: #333333;
+    }
+    QPushButton:pressed {
+      background-color: #444444;
     }
   )");
+}
 
+int main(int argc, char *argv[]) {
+  ResetMode mode = ResetMode::USER_RESET;
+  if (argc > 1) {
+    if (strcmp(argv[1], "--recover") == 0) {
+      mode = ResetMode::RECOVER;
+    } else if (strcmp(argv[1], "--format") == 0) {
+      mode = ResetMode::FORMAT;
+    }
+  }
+
+  QApplication a(argc, argv);
+  Reset reset(mode);
+  setMainWindow(&reset);
   return a.exec();
 }

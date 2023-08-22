@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 import sys
-from tools.lib.route import Route
-from tools.lib.logreader import MultiLogIterator
+from openpilot.tools.lib.route import Route
+from openpilot.tools.lib.logreader import MultiLogIterator
 
 
 def get_fingerprint(lr):
@@ -17,7 +17,7 @@ def get_fingerprint(lr):
       for c in msg.can:
         # read also msgs sent by EON on CAN bus 0x80 and filter out the
         # addr with more than 11 bits
-        if c.src % 0x80 == 0 and c.address < 0x800:
+        if c.src % 0x80 == 0 and c.address < 0x800 and c.address not in (0x7df, 0x7e0, 0x7e8):
           msgs[c.address] = len(c.dat)
 
   # show CAN fingerprint
@@ -41,5 +41,5 @@ if __name__ == "__main__":
     sys.exit(1)
 
   route = Route(sys.argv[1])
-  lr = MultiLogIterator(route.log_paths()[:5], wraparound=False)
+  lr = MultiLogIterator(route.log_paths()[:5])
   get_fingerprint(lr)

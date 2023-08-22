@@ -1,8 +1,10 @@
-Import('env', 'arch', 'cereal', 'messaging', 'common', 'gpucommon', 'visionipc')
+import os
+
+Import('env', 'arch', 'cereal', 'messaging', 'common', 'gpucommon', 'visionipc', 'transformations')
 lenv = env.Clone()
 
 libs = [cereal, messaging, common, visionipc, gpucommon,
-        'OpenCL', 'SNPE', 'symphony-cpu', 'capnp', 'zmq', 'kj', 'yuv']
+        'OpenCL', 'SNPE', 'capnp', 'zmq', 'kj', 'yuv']
 
 def get_dlsym_offset():
   """Returns the offset between dlopen and dlsym in libdl.so"""
@@ -21,19 +23,22 @@ common_src = [
 ]
 
 thneed_src = [
-  "thneed/thneed.cc",
+  "thneed/thneed_common.cc",
+  "thneed/thneed_qcom2.cc",
   "thneed/serialize.cc",
   "runners/thneedmodel.cc",
 ]
 
-if arch == "aarch64" or arch == "larch64":
-  libs += ['gsl', 'CB']
-  libs += ['gnustl_shared'] if arch == "aarch64" else ['pthread', 'dl']
+use_thneed = not GetOption('no_thneed')
 
-  common_src += thneed_src
-  dlsym_offset = get_dlsym_offset()
-  lenv['CXXFLAGS'].append("-DUSE_THNEED")
-  lenv['CXXFLAGS'].append(f"-DDLSYM_OFFSET={dlsym_offset}")
+if arch == "larch64":
+  libs += ['gsl', 'CB', 'pthread', 'dl']
+
+  if use_thneed:
+    common_src += thneed_src
+    dlsym_offset = get_dlsym_offset()
+    lenv['CXXFLAGS'].append("-DUSE_THNEED")
+    lenv['CXXFLAGS'].append(f"-DDLSYM_OFFSET={dlsym_offset}")
 else:
   libs += ['pthread']
 
@@ -50,29 +55,57 @@ else:
     del libs[libs.index('OpenCL')]
     lenv['FRAMEWORKS'] = ['OpenCL']
 
-    # no SNPE on Mac
+  if arch == "Darwin" or arch == "aarch64":
+    # no SNPE on Mac and ARM Linux
     del libs[libs.index('SNPE')]
-    del libs[libs.index('symphony-cpu')]
     del common_src[common_src.index('runners/snpemodel.cc')]
 
+onnxrunner_path = File("runners/onnx_runner.py").abspath
+transform_path = File("transforms/transform.cl").abspath
+loadyuv_path = File("transforms/loadyuv.cl").abspath
+lenv['CXXFLAGS'].append(f'-DTRANSFORM_PATH=\\"{transform_path}\\"')
+lenv['CXXFLAGS'].append(f'-DLOADYUV_PATH=\\"{loadyuv_path}\\"')
+lenv['CXXFLAGS'].append(f'-DONNXRUNNER_PATH=\\"{onnxrunner_path}\\"')
+
 common_model = lenv.Object(common_src)
-
-# build thneed model
-if arch == "aarch64" or arch == "larch64":
-  compiler = lenv.Program('thneed/compile', ["thneed/compile.cc"]+common_model, LIBS=libs)
-  cmd = f"cd {Dir('.').abspath} && {compiler[0].abspath} ../../models/supercombo.dlc ../../models/supercombo.thneed --binary"
-
-  lib_paths = ':'.join([Dir(p).abspath for p in lenv["LIBPATH"]])
-  cenv = Environment(ENV={'LD_LIBRARY_PATH': f"{lib_paths}:{lenv['ENV']['LD_LIBRARY_PATH']}"})
-  cenv.Command("../../models/supercombo.thneed", ["../../models/supercombo.dlc", compiler], cmd)
 
 lenv.Program('_dmonitoringmodeld', [
     "dmonitoringmodeld.cc",
     "models/dmonitoring.cc",
   ]+common_model, LIBS=libs)
 
-lenv.Program('_modeld', [
+# build thneed model
+if use_thneed and arch == "larch64" or GetOption('pc_thneed'):
+  fn = File("models/supercombo").abspath
+
+  tinygrad_opts = ["NATIVE_EXPLOG=1", "VALIDHACKS=1", "OPTLOCAL=1", "IMAGE=2", "GPU=1", "ENABLE_METHOD_CACHE=1"]
+  if not GetOption('pc_thneed'):
+    # use FLOAT16 on device for speed + don't cache the CL kernels for space
+    tinygrad_opts += ["FLOAT16=1", "PYOPENCL_NO_CACHE=1"]
+  cmd = f"cd {Dir('#').abspath}/tinygrad_repo && " + ' '.join(tinygrad_opts) + f" python3 openpilot/compile.py {fn}.onnx {fn}.thneed"
+
+  tinygrad_files = sum([lenv.Glob("#"+x) for x in open(File("#release/files_common").abspath).read().split("\n") if x.startswith("tinygrad_repo/")], [])
+  lenv.Command(fn + ".thneed", [fn + ".onnx"] + tinygrad_files, cmd)
+
+llenv = lenv.Clone()
+if GetOption('pc_thneed'):
+  pc_thneed_src = [
+    "thneed/thneed_common.cc",
+    "thneed/thneed_pc.cc",
+    "thneed/serialize.cc",
+    "runners/thneedmodel.cc",
+  ]
+  llenv['CFLAGS'].append("-DUSE_THNEED")
+  llenv['CXXFLAGS'].append("-DUSE_THNEED")
+  common_model += llenv.Object(pc_thneed_src)
+  libs += ['dl']
+
+llenv.Program('_modeld', [
     "modeld.cc",
     "models/driving.cc",
-  ]+common_model, LIBS=libs)
+  ]+common_model, LIBS=libs + transformations)
 
+lenv.Program('_navmodeld', [
+    "navmodeld.cc",
+    "models/nav.cc",
+  ]+common_model, LIBS=libs + transformations)

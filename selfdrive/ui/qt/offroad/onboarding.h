@@ -1,52 +1,58 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QImage>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QStackedWidget>
-#include <QTextEdit>
 #include <QWidget>
 
-#include "selfdrive/common/params.h"
+#include "common/params.h"
+#include "selfdrive/ui/qt/qt_window.h"
 
 class TrainingGuide : public QFrame {
   Q_OBJECT
 
 public:
-  explicit TrainingGuide(QWidget *parent = 0) : QFrame(parent) {};
+  explicit TrainingGuide(QWidget *parent = 0);
 
-protected:
+private:
   void showEvent(QShowEvent *event) override;
   void paintEvent(QPaintEvent *event) override;
   void mouseReleaseEvent(QMouseEvent* e) override;
+  QImage loadImage(int id);
 
-private:
   QImage image;
-  QPoint imageCorner;
+  QSize image_raw_size;
   int currentIndex = 0;
 
-  // Bounding boxes for the a given training guide step
-  // (minx, maxx, miny, maxy)
-  QVector<QVector<int>> boundingBox {
-    {650, 1375, 700, 900},
-    {1600, 1920, 0, 1080},
-    {1600, 1920, 0, 1080},
-    {1240, 1750, 480, 1080},
-    {1570, 1780, 620, 750},
-    {1600, 1920, 0, 1080},
-    {1630, 1740, 620, 780},
-    {1200, 1920, 0, 1080},
-    {1455, 1850, 400, 660},
-    {1460, 1800, 195, 520},
-    {1600, 1920, 0, 1080},
-    {1350, 1920, 65, 1080},
-    {1600, 1920, 0, 1080},
-    {1570, 1900, 130, 1000},
-    {1350, 1770, 500, 700},
-    {1600, 1920, 0, 1080},
-    {1600, 1920, 0, 1080},
-    {1000, 1800, 760, 954},
+  // Bounding boxes for each training guide step
+  const QRect continueBtn = {1840, 0, 320, 1080};
+  QVector<QRect> boundingRect {
+    QRect(112, 804, 618, 164),
+    continueBtn,
+    continueBtn,
+    QRect(1641, 558, 210, 313),
+    QRect(1662, 528, 184, 108),
+    continueBtn,
+    QRect(1814, 621, 211, 170),
+    QRect(1350, 0, 497, 755),
+    QRect(1540, 386, 468, 238),
+    QRect(112, 804, 1126, 164),
+    QRect(1598, 199, 316, 333),
+    continueBtn,
+    QRect(1364, 90, 796, 990),
+    continueBtn,
+    QRect(1593, 114, 318, 853),
+    QRect(1379, 511, 391, 243),
+    continueBtn,
+    continueBtn,
+    QRect(630, 804, 626, 164),
+    QRect(108, 804, 426, 164),
   };
+
+  const QString img_path = "../assets/training/";
+  QElapsedTimer click_timer;
 
 signals:
   void completedTraining();
@@ -59,15 +65,13 @@ class TermsPage : public QFrame {
 public:
   explicit TermsPage(QWidget *parent = 0) : QFrame(parent) {};
 
-protected:
-  void showEvent(QShowEvent *event) override;
-
-private:
-  QPushButton *accept_btn;
-  QPushButton *decline_btn;
-
 public slots:
   void enableAccept();
+
+private:
+  void showEvent(QShowEvent *event) override;
+
+  QPushButton *accept_btn;
 
 signals:
   void acceptedTerms();
@@ -80,12 +84,8 @@ class DeclinePage : public QFrame {
 public:
   explicit DeclinePage(QWidget *parent = 0) : QFrame(parent) {};
 
-protected:
-  void showEvent(QShowEvent *event) override;
-
 private:
-  QPushButton *back_btn;
-  QPushButton *uninstall_btn;
+  void showEvent(QShowEvent *event) override;
 
 signals:
   void getBack();
@@ -96,20 +96,15 @@ class OnboardingWindow : public QStackedWidget {
 
 public:
   explicit OnboardingWindow(QWidget *parent = 0);
-  bool isOnboardingDone();
+  inline void showTrainingGuide() { setCurrentIndex(1); }
+  inline bool completed() const { return accepted_terms && training_done; }
 
 private:
+  void updateActiveScreen();
+
   Params params;
-  std::string current_terms_version;
-  std::string current_training_version;
-  bool accepted_terms = false;
-  bool training_done = false;
-  void updateOnboardingStatus();
+  bool accepted_terms = false, training_done = false;
 
 signals:
   void onboardingDone();
-  void resetTrainingGuide();
-
-public slots:
-  void updateActiveScreen();
 };

@@ -12,7 +12,7 @@ import cereal.messaging as messaging
 
 if __name__ == "__main__":
 
-  parser = argparse.ArgumentParser(description='Sniff a communcation socket')
+  parser = argparse.ArgumentParser(description='Sniff a communication socket')
   parser.add_argument('--addr', default='127.0.0.1')
   args = parser.parse_args()
 
@@ -34,7 +34,8 @@ if __name__ == "__main__":
     polld = poller.poll(1000)
     for sock in polld:
       msg = sock.receive()
-      evt = log.Event.from_bytes(msg)
+      with log.Event.from_bytes(msg) as log_evt:
+        evt = log_evt
 
       for item in evt.can:
         if item.address == 0xe4 and item.src == 128:

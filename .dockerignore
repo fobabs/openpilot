@@ -16,6 +16,9 @@
 *.so
 *.a
 
+venv/
+.venv/
+
 notebooks
 phone
 massivemap
@@ -36,5 +39,3 @@ xx/projects
 !xx/projects/map3d
 xx/ops
 xx/junk
-tools/sim/carla
-tools/sim/*.tar.gz

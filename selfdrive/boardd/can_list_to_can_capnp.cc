@@ -1,13 +1,5 @@
 #include "cereal/messaging/messaging.h"
-
-typedef struct {
-	long address;
-	std::string dat;
-	long busTime;
-	long src;
-} can_frame;
-
-extern "C" {
+#include "panda.h"
 
 void can_list_to_can_capnp_cpp(const std::vector<can_frame> &can_list, std::string &out, bool sendCan, bool valid) {
   MessageBuilder msg;
@@ -26,6 +18,4 @@ void can_list_to_can_capnp_cpp(const std::vector<can_frame> &can_list, std::stri
   out.resize(msg_size);
   kj::ArrayOutputStream output_stream(kj::ArrayPtr<capnp::byte>((unsigned char *)out.data(), msg_size));
   capnp::writeMessage(output_stream, msg);
-}
-
 }

@@ -1,78 +1,128 @@
 #pragma once
 
-#include <map>
+#include <QPushButton>
+#include <QStackedLayout>
+#include <QWidget>
 
-#include <QSoundEffect>
-#include <QtWidgets>
-
-#include "cereal/gen/cpp/log.capnp.h"
-#include "selfdrive/hardware/hw.h"
+#include "common/util.h"
 #include "selfdrive/ui/ui.h"
-#include "selfdrive/ui/qt/qt_window.h"
+#include "selfdrive/ui/qt/widgets/cameraview.h"
 
-typedef cereal::CarControl::HUDControl::AudibleAlert AudibleAlert;
+
+const int btn_size = 192;
+const int img_size = (btn_size / 4) * 3;
+
 
 // ***** onroad widgets *****
-
 class OnroadAlerts : public QWidget {
   Q_OBJECT
 
 public:
-  OnroadAlerts(QWidget *parent = 0);
+  OnroadAlerts(QWidget *parent = 0) : QWidget(parent) {};
+  void updateAlert(const Alert &a);
 
 protected:
   void paintEvent(QPaintEvent*) override;
 
 private:
-  void stopSounds();
-  void playSound(AudibleAlert alert);
-  void updateAlert(const QString &t1, const QString &t2, float blink_rate,
-                   const std::string &type, cereal::ControlsState::AlertSize size, AudibleAlert sound);
-
-  std::map<AudibleAlert, std::pair<QString, bool>> sound_map {
-    // AudibleAlert, (file path, inf loop)
-    {AudibleAlert::CHIME_DISENGAGE, {"../assets/sounds/disengaged.wav", false}},
-    {AudibleAlert::CHIME_ENGAGE, {"../assets/sounds/engaged.wav", false}},
-    {AudibleAlert::CHIME_WARNING1, {"../assets/sounds/warning_1.wav", false}},
-    {AudibleAlert::CHIME_WARNING2, {"../assets/sounds/warning_2.wav", false}},
-    {AudibleAlert::CHIME_WARNING2_REPEAT, {"../assets/sounds/warning_2.wav", true}},
-    {AudibleAlert::CHIME_WARNING_REPEAT, {"../assets/sounds/warning_repeat.wav", true}},
-    {AudibleAlert::CHIME_ERROR, {"../assets/sounds/error.wav", false}},
-    {AudibleAlert::CHIME_PROMPT, {"../assets/sounds/error.wav", false}}
-  };
-
   QColor bg;
-  float volume = Hardware::MIN_VOLUME;
-  std::map<AudibleAlert, QSoundEffect> sounds;
-  float blinking_rate = 0;
-  QString text1, text2;
-  std::string alert_type;
-  cereal::ControlsState::AlertSize alert_size;
-
-public slots:
-  void updateState(const UIState &s);
-  void offroadTransition(bool offroad);
+  Alert alert = {};
 };
 
-// container window for the NVG UI
-class NvgWindow : public QOpenGLWidget, protected QOpenGLFunctions {
+class ExperimentalButton : public QPushButton {
   Q_OBJECT
 
 public:
-  using QOpenGLWidget::QOpenGLWidget;
-  explicit NvgWindow(QWidget* parent = 0);
-  ~NvgWindow();
+  explicit ExperimentalButton(QWidget *parent = 0);
+  void updateState(const UIState &s);
+
+private:
+  void paintEvent(QPaintEvent *event) override;
+  void changeMode();
+
+  Params params;
+  QPixmap engage_img;
+  QPixmap experimental_img;
+  bool experimental_mode;
+  bool engageable;
+};
+
+
+class MapSettingsButton : public QPushButton {
+  Q_OBJECT
+
+public:
+  explicit MapSettingsButton(QWidget *parent = 0);
+
+private:
+  void paintEvent(QPaintEvent *event) override;
+
+  QPixmap settings_img;
+};
+
+// container window for the NVG UI
+class AnnotatedCameraWidget : public CameraWidget {
+  Q_OBJECT
+  Q_PROPERTY(float speed MEMBER speed);
+  Q_PROPERTY(QString speedUnit MEMBER speedUnit);
+  Q_PROPERTY(float setSpeed MEMBER setSpeed);
+  Q_PROPERTY(float speedLimit MEMBER speedLimit);
+  Q_PROPERTY(bool is_cruise_set MEMBER is_cruise_set);
+  Q_PROPERTY(bool has_eu_speed_limit MEMBER has_eu_speed_limit);
+  Q_PROPERTY(bool has_us_speed_limit MEMBER has_us_speed_limit);
+  Q_PROPERTY(bool is_metric MEMBER is_metric);
+
+  Q_PROPERTY(bool dmActive MEMBER dmActive);
+  Q_PROPERTY(bool hideBottomIcons MEMBER hideBottomIcons);
+  Q_PROPERTY(bool rightHandDM MEMBER rightHandDM);
+  Q_PROPERTY(int status MEMBER status);
+
+public:
+  explicit AnnotatedCameraWidget(VisionStreamType type, QWidget* parent = 0);
+  void updateState(const UIState &s);
+
+  MapSettingsButton *map_settings_btn;
+
+private:
+  void drawText(QPainter &p, int x, int y, const QString &text, int alpha = 255);
+
+  QVBoxLayout *main_layout;
+  ExperimentalButton *experimental_btn;
+  QPixmap dm_img;
+  float speed;
+  QString speedUnit;
+  float setSpeed;
+  float speedLimit;
+  bool is_cruise_set = false;
+  bool is_metric = false;
+  bool dmActive = false;
+  bool hideBottomIcons = false;
+  bool rightHandDM = false;
+  float dm_fade_state = 1.0;
+  bool has_us_speed_limit = false;
+  bool has_eu_speed_limit = false;
+  bool v_ego_cluster_seen = false;
+  int status = STATUS_DISENGAGED;
+  std::unique_ptr<PubMaster> pm;
+
+  int skip_frame_count = 0;
+  bool wide_cam_requested = false;
 
 protected:
   void paintGL() override;
   void initializeGL() override;
-  void resizeGL(int w, int h) override;
+  void showEvent(QShowEvent *event) override;
+  void updateFrameMat() override;
+  void drawLaneLines(QPainter &painter, const UIState *s);
+  void drawLead(QPainter &painter, const cereal::RadarState::LeadData::Reader &lead_data, const QPointF &vd);
+  void drawHud(QPainter &p);
+  void drawDriverState(QPainter &painter, const UIState *s);
+  inline QColor redColor(int alpha = 255) { return QColor(201, 34, 49, alpha); }
+  inline QColor whiteColor(int alpha = 255) { return QColor(255, 255, 255, alpha); }
+  inline QColor blackColor(int alpha = 255) { return QColor(0, 0, 0, alpha); }
 
-private:
   double prev_draw_t = 0;
-
-public slots:
-  void update(const UIState &s);
+  FirstOrderFilter fps_filter;
 };
 
 // container for all onroad widgets
@@ -81,18 +131,22 @@ class OnroadWindow : public QWidget {
 
 public:
   OnroadWindow(QWidget* parent = 0);
-  QWidget *map = nullptr;
-
-private:
-  OnroadAlerts *alerts;
-  NvgWindow *nvg;
-  QStackedLayout *layout;
-  QHBoxLayout* split;
+  bool isMapVisible() const { return map && map->isVisible(); }
+  void showMapPanel(bool show) { if (map) map->setVisible(show); }
 
 signals:
-  void update(const UIState &s);
-  void offroadTransitionSignal(bool offroad);
+  void mapPanelRequested();
+
+private:
+  void paintEvent(QPaintEvent *event);
+  void mousePressEvent(QMouseEvent* e) override;
+  OnroadAlerts *alerts;
+  AnnotatedCameraWidget *nvg;
+  QColor bg = bg_colors[STATUS_DISENGAGED];
+  QWidget *map = nullptr;
+  QHBoxLayout* split;
 
 private slots:
   void offroadTransition(bool offroad);
+  void updateState(const UIState &s);
 };

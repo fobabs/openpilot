@@ -1,93 +1,102 @@
 #!/usr/bin/env python3
 import os
+import copy
 import random
 import time
+import unittest
 from collections import defaultdict
-from functools import wraps
+from pprint import pprint
 
 import cereal.messaging as messaging
-from cereal import car
-from common.basedir import BASEDIR
-from common.params import Params
-from common.spinner import Spinner
-from common.timeout import Timeout
-from panda import Panda
-from selfdrive.boardd.boardd import can_list_to_can_capnp
-from selfdrive.car import make_can_msg
-from selfdrive.test.helpers import with_processes
+from cereal import car, log
+from openpilot.common.params import Params
+from openpilot.common.timeout import Timeout
+from openpilot.selfdrive.boardd.boardd import can_list_to_can_capnp
+from openpilot.selfdrive.car import make_can_msg
+from openpilot.system.hardware import TICI
+from openpilot.selfdrive.test.helpers import phone_only, with_processes
 
 
-def reset_panda(fn):
-  @wraps(fn)
-  def wrapper():
-    p = Panda()
-    for i in [0, 1, 2, 0xFFFF]:
-      p.can_clear(i)
-    p.reset()
-    p.close()
-    fn()
-  return wrapper
+class TestBoardd(unittest.TestCase):
 
-os.environ['STARTED'] = '1'
-os.environ['BOARDD_LOOPBACK'] = '1'
-os.environ['BASEDIR'] = BASEDIR
+  @classmethod
+  def setUpClass(cls):
+    os.environ['STARTED'] = '1'
+    os.environ['BOARDD_LOOPBACK'] = '1'
 
-@reset_panda
-@with_processes(['pandad'])
-def test_boardd_loopback():
-  # wait for boardd to init
-  spinner = Spinner()
-  time.sleep(2)
+  @phone_only
+  @with_processes(['pandad'])
+  def test_loopback(self):
+    params = Params()
+    params.put_bool("IsOnroad", False)
 
-  with Timeout(60, "boardd didn't start"):
-    sm = messaging.SubMaster(['pandaState'])
-    while sm.rcv_frame['pandaState'] < 1:
-      sm.update(1000)
+    with Timeout(90, "boardd didn't start"):
+      sm = messaging.SubMaster(['pandaStates'])
+      while sm.rcv_frame['pandaStates'] < 1 or len(sm['pandaStates']) == 0 or \
+          any(ps.pandaType == log.PandaState.PandaType.unknown for ps in sm['pandaStates']):
+        sm.update(1000)
 
-  # boardd blocks on CarVin and CarParams
-  cp = car.CarParams.new_message()
-  cp.safetyModel = car.CarParams.SafetyModel.allOutput
-  Params().put("CarVin", b"0"*17)
-  Params().put_bool("ControlsReady", True)
-  Params().put("CarParams", cp.to_bytes())
+    num_pandas = len(sm['pandaStates'])
+    expected_pandas = 2 if TICI and "SINGLE_PANDA" not in os.environ else 1
+    self.assertEqual(num_pandas, expected_pandas, "connected pandas ({num_pandas}) doesn't match expected panda count ({expected_pandas}). \
+                                                   connect another panda for multipanda tests.")
 
-  sendcan = messaging.pub_sock('sendcan')
-  can = messaging.sub_sock('can', conflate=False, timeout=100)
+    # boardd safety setting relies on these params
+    cp = car.CarParams.new_message()
 
-  time.sleep(1)
+    safety_config = car.CarParams.SafetyConfig.new_message()
+    safety_config.safetyModel = car.CarParams.SafetyModel.allOutput
+    cp.safetyConfigs = [safety_config]*num_pandas
 
-  n = 1000
-  for i in range(n):
-    spinner.update(f"boardd loopback {i}/{n}")
+    params.put_bool("IsOnroad", True)
+    params.put_bool("FirmwareQueryDone", True)
+    params.put_bool("ControlsReady", True)
+    params.put("CarParams", cp.to_bytes())
 
-    sent_msgs = defaultdict(set)
-    for _ in range(random.randrange(10)):
-      to_send = []
-      for __ in range(random.randrange(100)):
-        bus = random.randrange(3)
-        addr = random.randrange(1, 1<<29)
-        dat = bytes([random.getrandbits(8) for _ in range(random.randrange(1, 9))])
-        sent_msgs[bus].add((addr, dat))
-        to_send.append(make_can_msg(addr, dat, bus))
-      sendcan.send(can_list_to_can_capnp(to_send, msgtype='sendcan'))
+    sendcan = messaging.pub_sock('sendcan')
+    can = messaging.sub_sock('can', conflate=False, timeout=100)
+    sm = messaging.SubMaster(['pandaStates'])
+    time.sleep(0.5)
 
-    max_recv = 10
-    while max_recv > 0 and any(len(sent_msgs[bus]) for bus in range(3)):
-      recvd = messaging.drain_sock(can, wait_for_one=True)
-      for msg in recvd:
-        for m in msg.can:
-          if m.src >= 128:
-            k = (m.address, m.dat)
-            assert k in sent_msgs[m.src-128]
-            sent_msgs[m.src-128].discard(k)
-      max_recv -= 1
+    n = 200
+    for i in range(n):
+      print(f"boardd loopback {i}/{n}")
 
-    # if a set isn't empty, messages got dropped
-    for bus in range(3):
-      assert not len(sent_msgs[bus]), f"loop {i}: bus {bus} missing {len(sent_msgs[bus])} messages"
+      sent_msgs = defaultdict(set)
+      for _ in range(random.randrange(20, 100)):
+        to_send = []
+        for __ in range(random.randrange(20)):
+          bus = random.choice([b for b in range(3*num_pandas) if b % 4 != 3])
+          addr = random.randrange(1, 1<<29)
+          dat = bytes(random.getrandbits(8) for _ in range(random.randrange(1, 9)))
+          sent_msgs[bus].add((addr, dat))
+          to_send.append(make_can_msg(addr, dat, bus))
+        sendcan.send(can_list_to_can_capnp(to_send, msgtype='sendcan'))
 
-  spinner.close()
+      sent_loopback = copy.deepcopy(sent_msgs)
+      sent_loopback.update({k+128: copy.deepcopy(v) for k, v in sent_msgs.items()})
+      sent_total = {k: len(v) for k, v in sent_loopback.items()}
+      for _ in range(100 * 5):
+        sm.update(0)
+        recvd = messaging.drain_sock(can, wait_for_one=True)
+        for msg in recvd:
+          for m in msg.can:
+            key = (m.address, m.dat)
+            assert key in sent_loopback[m.src], f"got unexpected msg: {m.src=} {m.address=} {m.dat=}"
+            sent_loopback[m.src].discard(key)
+
+        if all(len(v) == 0 for v in sent_loopback.values()):
+          break
+
+      # if a set isn't empty, messages got dropped
+      pprint(sent_msgs)
+      pprint(sent_loopback)
+      print({k: len(x) for k, x in sent_loopback.items()})
+      print(sum([len(x) for x in sent_loopback.values()]))
+      pprint(sm['pandaStates'])  # may drop messages due to RX buffer overflow
+      for bus in sent_loopback.keys():
+        assert not len(sent_loopback[bus]), f"loop {i}: bus {bus} missing {len(sent_loopback[bus])} out of {sent_total[bus]} messages"
 
 
 if __name__ == "__main__":
-    test_boardd_loopback()
+  unittest.main()

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import threading
 import time
@@ -13,9 +14,9 @@ else:
 
 import cereal.messaging as messaging
 from collections import namedtuple
-from tools.lib.logreader import LogReader
-from selfdrive.test.process_replay.test_processes import get_segment
-from common.basedir import BASEDIR
+from openpilot.tools.lib.logreader import LogReader
+from openpilot.selfdrive.test.openpilotci import get_url
+from openpilot.common.basedir import BASEDIR
 
 ProcessConfig = namedtuple('ProcessConfig', ['proc_name', 'pub_sub', 'ignore', 'command', 'path', 'segment', 'wait_for_response'])
 
@@ -27,7 +28,7 @@ CONFIGS = [
     },
     ignore=[],
     command="./ubloxd",
-    path="selfdrive/locationd/",
+    path="system/ubloxd",
     segment="0375fdf7b1ce594d|2019-06-13--08-32-25--3",
     wait_for_response=True
   ),
@@ -53,9 +54,11 @@ class TestValgrind(unittest.TestCase):
     # Run valgrind on a process
     command = "valgrind --leak-check=full " + arg
     p = subprocess.Popen(command, stderr=subprocess.PIPE, shell=True, preexec_fn=os.setsid)  # pylint: disable=W1509
-    while not self.done:
+
+    while not self.replay_done:
       time.sleep(0.1)
 
+    # Kill valgrind and extract leak output
     os.killpg(os.getpgid(p.pid), signal.SIGINT)
     _, err = p.communicate()
     error_msg = str(err, encoding='utf-8')
@@ -70,7 +73,7 @@ class TestValgrind(unittest.TestCase):
       self.leak = False
 
   def replay_process(self, config, logreader):
-    pub_sockets = [s for s in config.pub_sub.keys()]  # We dump data from logs here
+    pub_sockets = list(config.pub_sub.keys())  # We dump data from logs here
     sub_sockets = [s for _, sub in config.pub_sub.items() for s in sub]  # We get responses here
     pm = messaging.PubMaster(pub_sockets)
     sm = messaging.SubMaster(sub_sockets)
@@ -91,18 +94,24 @@ class TestValgrind(unittest.TestCase):
       if config.wait_for_response:
         sm.update(100)
 
-    self.done = True
+    self.replay_done = True
 
   def test_config(self):
     open(os.path.join(BASEDIR, "selfdrive/test/valgrind_logs.txt"), "w").close()
 
     for cfg in CONFIGS:
-      self.done = False
-      URL = cfg.segment
-      lr = LogReader(get_segment(URL))
+      self.leak = None
+      self.replay_done = False
+
+      r, n = cfg.segment.rsplit("--", 1)
+      lr = LogReader(get_url(r, n))
       self.replay_process(cfg, lr)
-      time.sleep(1)  # Wait for the logs to get written
+
+      while self.leak is None:
+        time.sleep(0.1)  # Wait for the valgrind to finish
+
       self.assertFalse(self.leak)
+
 
 if __name__ == "__main__":
   unittest.main()

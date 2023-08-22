@@ -3,65 +3,25 @@
 #include <optional>
 
 #include <QGeoCoordinate>
-#include <QGeoManeuver>
-#include <QGeoRouteRequest>
-#include <QGeoRouteSegment>
-#include <QGeoRoutingManager>
-#include <QGeoServiceProvider>
 #include <QGestureEvent>
-#include <QHBoxLayout>
-#include <QVBoxLayout>
 #include <QLabel>
+#include <QMap>
 #include <QMapboxGL>
 #include <QMouseEvent>
 #include <QOpenGLWidget>
+#include <QPixmap>
+#include <QPushButton>
 #include <QScopedPointer>
 #include <QString>
-#include <QtGlobal>
-#include <QTimer>
+#include <QVBoxLayout>
 #include <QWheelEvent>
-#include <QMap>
-#include <QPixmap>
 
-#include "selfdrive/common/params.h"
 #include "cereal/messaging/messaging.h"
-
-class MapInstructions : public QWidget {
-  Q_OBJECT
-
-private:
-  QLabel *distance;
-  QLabel *primary;
-  QLabel *secondary;
-  QLabel *icon_01;
-  QHBoxLayout *lane_layout;
-  QMap<QString, QVariant> last_banner;
-
-public:
-  MapInstructions(QWidget * parent=nullptr);
-
-public slots:
-  void updateDistance(float d);
-  void updateInstructions(QMap<QString, QVariant> banner, bool full);
-};
-
-class MapETA : public QWidget {
-  Q_OBJECT
-
-private:
-  QLabel *eta;
-  QLabel *time;
-  QLabel *time_unit;
-  QLabel *distance;
-  QLabel *distance_unit;
-  Params params;
-
-public:
-  MapETA(QWidget * parent=nullptr);
-
-public slots:
-  void updateETA(float seconds, float seconds_typical, float distance);
-};
+#include "common/params.h"
+#include "common/util.h"
+#include "selfdrive/ui/ui.h"
+#include "selfdrive/ui/qt/maps/map_eta.h"
+#include "selfdrive/ui/qt/maps/map_instructions.h"
 
 class MapWindow : public QOpenGLWidget {
   Q_OBJECT
@@ -81,58 +41,49 @@ private:
   void initLayers();
 
   void mousePressEvent(QMouseEvent *ev) final;
+  void mouseDoubleClickEvent(QMouseEvent *ev) final;
   void mouseMoveEvent(QMouseEvent *ev) final;
   void wheelEvent(QWheelEvent *ev) final;
   bool event(QEvent *event) final;
   bool gestureEvent(QGestureEvent *event);
   void pinchTriggered(QPinchGesture *gesture);
+  void setError(const QString &err_str);
 
-  bool m_sourceAdded = false;
-  SubMaster *sm;
-  QTimer* timer;
+  bool loaded_once = false;
 
   // Panning
   QPointF m_lastPos;
-  int pan_counter = 0;
-  int zoom_counter = 0;
+  int interaction_counter = 0;
 
   // Position
-  QMapbox::Coordinate last_position = QMapbox::Coordinate(37.7393118509158, -122.46471285025565);
+  std::optional<QMapbox::Coordinate> last_valid_nav_dest;
+  std::optional<QMapbox::Coordinate> last_position;
   std::optional<float> last_bearing;
+  FirstOrderFilter velocity_filter;
+  bool locationd_valid = false;
+  bool routing_problem = false;
 
-  // Route
-  bool gps_ok = false;
-  QGeoServiceProvider *geoservice_provider;
-  QGeoRoutingManager *routing_manager;
-  QGeoRoute route;
-  QGeoRouteSegment segment;
-
+  QWidget *map_overlay;
+  QLabel *error;
   MapInstructions* map_instructions;
   MapETA* map_eta;
 
-  QMapbox::Coordinate nav_destination;
-  double last_maneuver_distance = 1000;
+  // Blue with normal nav, green when nav is input into the model
+  QColor getNavPathColor(bool nav_enabled) {
+    return nav_enabled ? QColor("#31ee73") : QColor("#31a1ee");
+  }
 
-  // Route recompute
-  QTimer* recompute_timer;
-  int recompute_backoff = 0;
-  int recompute_countdown = 0;
-  void calculateRoute(QMapbox::Coordinate destination);
   void clearRoute();
-  bool shouldRecompute();
-  void updateETA();
+  void updateDestinationMarker();
+  uint64_t route_rcv_frame = 0;
 
 private slots:
-  void timerUpdate();
-  void routeCalculated(QGeoRouteReply *reply);
-  void recomputeRoute();
+  void updateState(const UIState &s);
 
 public slots:
   void offroadTransition(bool offroad);
 
 signals:
-  void distanceChanged(float distance);
-  void instructionsChanged(QMap<QString, QVariant> banner, bool full);
-  void ETAChanged(float seconds, float seconds_typical, float distance);
+  void requestVisible(bool visible);
+  void requestSettings(bool settings);
 };
-

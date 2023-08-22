@@ -1,6 +1,11 @@
-#!/usr/bin/bash -e
+#!/usr/bin/bash
 
-export SOURCE_DIR="/data/openpilot_source/"
+set -e
+
+if [ -z "$SOURCE_DIR" ]; then
+  echo "SOURCE_DIR must be set"
+  exit 1
+fi
 
 if [ -z "$GIT_COMMIT" ]; then
   echo "GIT_COMMIT must be set"
@@ -12,39 +17,70 @@ if [ -z "$TEST_DIR" ]; then
   exit 1
 fi
 
-# setup jenkins device
-if [ ! -d "$SOURCE_DIR" ]; then
-  # write continue.sh
-  CONTINUE_FILE="/data/data/com.termux/files/continue.sh"
-  echo "#!/usr/bin/bash" > $CONTINUE_FILE
-  echo "wpa_cli IFNAME=wlan0 SCAN" >> $CONTINUE_FILE
-  echo "sleep infinity" >> $CONTINUE_FILE
+umount /data/safe_staging/merged/ || true
+sudo umount /data/safe_staging/merged/ || true
+rm -rf /data/safe_staging/* || true
 
-  # write SSH keys
-  curl "https://github.com/commaci2.keys" > /data/params/d/GithubSshKeys
+CONTINUE_PATH="/data/continue.sh"
+tee $CONTINUE_PATH << EOF
+#!/usr/bin/bash
 
-  git clone --depth 1 https://github.com/commaai/openpilot.git "$SOURCE_DIR"
-fi
+sudo abctl --set_success
 
-if [ -f "/EON" ]; then
-  rm -rf /data/core
-  rm -rf /data/neoupdate
-  rm -rf /data/safe_staging
-fi
+# patch sshd config
+sudo mount -o rw,remount /
+echo tici-$(cat /proc/cmdline | sed -e 's/^.*androidboot.serialno=//' -e 's/ .*$//') | sudo tee /etc/hostname
+sudo sed -i "s,/data/params/d/GithubSshKeys,/usr/comma/setup_keys," /etc/ssh/sshd_config
+sudo systemctl daemon-reload
+sudo systemctl restart ssh
+sudo systemctl restart NetworkManager
+sudo systemctl disable ssh-param-watcher.path
+sudo systemctl disable ssh-param-watcher.service
+sudo mount -o ro,remount /
+
+while true; do
+  if ! sudo systemctl is-active -q ssh; then
+    sudo systemctl start ssh
+  fi
+
+  if ! pgrep -f 'ciui.py' > /dev/null 2>&1; then
+    echo 'starting UI'
+    cp $SOURCE_DIR/selfdrive/test/ciui.py /data/
+    /data/ciui.py &
+  fi
+
+  sleep 5s
+done
+
+sleep infinity
+EOF
+chmod +x $CONTINUE_PATH
 
 # set up environment
+if [ ! -d "$SOURCE_DIR" ]; then
+  git clone https://github.com/commaai/openpilot.git $SOURCE_DIR
+fi
 cd $SOURCE_DIR
+
+# cleanup orphaned locks
+find .git -type f -name "*.lock" -exec rm {} +
+
 git reset --hard
-git fetch
+git fetch --no-tags --no-recurse-submodules -j4 --verbose --depth 1 origin $GIT_COMMIT
 find . -maxdepth 1 -not -path './.git' -not -name '.' -not -name '..' -exec rm -rf '{}' \;
 git reset --hard $GIT_COMMIT
 git checkout $GIT_COMMIT
-git clean -xdf
+git clean -xdff
+git submodule sync
 git submodule update --init --recursive
-git submodule foreach --recursive git reset --hard
-git submodule foreach --recursive git clean -xdf
-echo "git checkout took $SECONDS seconds"
+git submodule foreach --recursive "git reset --hard && git clean -xdff"
+
+git lfs pull
+(ulimit -n 65535 && git lfs prune)
+
+echo "git checkout done, t=$SECONDS"
+du -hs $SOURCE_DIR $SOURCE_DIR/.git
 
 rsync -a --delete $SOURCE_DIR $TEST_DIR
 
-echo "$TEST_DIR synced with $GIT_COMMIT, took $SECONDS seconds"
+echo "$TEST_DIR synced with $GIT_COMMIT, t=$SECONDS"

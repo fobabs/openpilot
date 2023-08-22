@@ -22,10 +22,10 @@ while True:
   for c in lc.can:
     # read also msgs sent by EON on CAN bus 0x80 and filter out the
     # addr with more than 11 bits
-    if c.src in [0, 2] and c.address < 0x800:
+    if c.src % 0x80 == 0 and c.address < 0x800 and c.address not in (0x7df, 0x7e0, 0x7e8):
       msgs[c.address] = len(c.dat)
 
   fingerprint = ', '.join("%d: %d" % v for v in sorted(msgs.items()))
 
-  print("number of messages {0}:".format(len(msgs)))
-  print("fingerprint {0}".format(fingerprint))
+  print(f"number of messages {len(msgs)}:")
+  print(f"fingerprint {fingerprint}")
